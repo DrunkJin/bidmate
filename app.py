@@ -63,6 +63,8 @@ class Database:
                 raise RuntimeError("PostgreSQL 사용을 위해 psycopg 패키지가 필요합니다.") from exc
 
             def compat_rows(cursor):
+                if cursor.description is None:
+                    return lambda values: CompatRow()
                 columns = [column.name for column in cursor.description]
                 return lambda values: CompatRow(zip(columns, values))
 
