@@ -3,7 +3,7 @@ services:
     name: bidmate
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
     startCommand: python app.py
     healthCheckPath: /api/health
     envVars:
