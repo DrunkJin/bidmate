@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import mimetypes
 import os
+import secrets
 import sqlite3
 import uuid
 import urllib.error
@@ -19,6 +22,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 ROOT = Path(__file__).resolve().parent
 PUBLIC_DIR = ROOT / "public"
 DB_PATH = ROOT / "bidmate.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8787"))
 
@@ -42,16 +46,84 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def connection() -> sqlite3.Connection:
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    return db
+class CompatRow(dict):
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
 
 
-def ensure_column(db: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
-    if column not in columns:
-        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+class Database:
+    def __init__(self):
+        self.is_postgres = bool(DATABASE_URL)
+        if self.is_postgres:
+            try:
+                import psycopg
+            except ImportError as exc:
+                raise RuntimeError("PostgreSQL 사용을 위해 psycopg 패키지가 필요합니다.") from exc
+
+            def compat_rows(cursor):
+                columns = [column.name for column in cursor.description]
+                return lambda values: CompatRow(zip(columns, values))
+
+            self.raw = psycopg.connect(DATABASE_URL, row_factory=compat_rows)
+        else:
+            self.raw = sqlite3.connect(DB_PATH)
+            self.raw.row_factory = sqlite3.Row
+
+    def execute(self, sql: str, params=()):
+        if self.is_postgres:
+            sql = sql.replace("?", "%s")
+        return self.raw.execute(sql, params)
+
+    def executescript(self, script: str):
+        if self.is_postgres:
+            for statement in script.split(";"):
+                if statement.strip():
+                    self.raw.execute(statement)
+        else:
+            self.raw.executescript(script)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc_type is None:
+            self.raw.commit()
+        else:
+            self.raw.rollback()
+        self.raw.close()
+
+    def close(self):
+        self.raw.close()
+
+
+def connection() -> Database:
+    return Database()
+
+
+def ensure_column(db: Database, table: str, column: str, definition: str) -> None:
+    if db.is_postgres:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+    else:
+        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def password_hash(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def password_matches(password: str, encoded: str) -> bool:
+    try:
+        salt_hex, expected = encoded.split("$", 1)
+        actual = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1).hex()
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
 
 
 def demo_notices() -> list[dict]:
@@ -231,8 +303,10 @@ def fetch_notice_eligibility(notice_id: str) -> dict:
     result = {"licenses": licenses, "regions": regions, "fetched_at": now_iso()}
     with connection() as db:
         db.execute(
-            """INSERT OR REPLACE INTO notice_eligibility(notice_id, licenses, regions, fetched_at)
-            VALUES (?, ?, ?, ?)""",
+            """INSERT INTO notice_eligibility(notice_id, licenses, regions, fetched_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(notice_id) DO UPDATE SET licenses=excluded.licenses,
+            regions=excluded.regions, fetched_at=excluded.fetched_at""",
             (notice_id, json.dumps(licenses, ensure_ascii=False),
              json.dumps(regions, ensure_ascii=False), result["fetched_at"]),
         )
@@ -262,11 +336,20 @@ def initialize_database() -> None:
                 notice_id TEXT PRIMARY KEY, licenses TEXT NOT NULL, regions TEXT NOT NULL,
                 fetched_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL, created_at TEXT NOT NULL
+            );
             """
         )
+        ensure_column(db, "profiles", "email", "TEXT")
+        ensure_column(db, "profiles", "password_hash", "TEXT")
+        insert_demo = """INSERT INTO profiles
+            (user_id,company_name,region,categories,keywords,max_budget,capabilities,updated_at,email,password_hash)
+            VALUES ('demo', '모먼트 스튜디오', '서울', ?, ?, 50000000, ?, ?, NULL, NULL)
+            ON CONFLICT(user_id) DO NOTHING"""
         db.execute(
-            """INSERT OR IGNORE INTO profiles VALUES
-            ('demo', '모먼트 스튜디오', '서울', ?, ?, 50000000, ?, ?)""",
+            insert_demo,
             (
                 json.dumps(["영상제작", "디자인"], ensure_ascii=False),
                 json.dumps(["영상", "콘텐츠", "홍보", "디자인"], ensure_ascii=False),
@@ -274,6 +357,8 @@ def initialize_database() -> None:
                 now_iso(),
             ),
         )
+        if db.is_postgres:
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS profiles_email_unique ON profiles(email) WHERE email IS NOT NULL")
         existing_title = db.execute("SELECT title FROM notices LIMIT 1").fetchone()
         if existing_title and "?" in existing_title[0]:
             db.execute("DELETE FROM saved_notices")
@@ -392,21 +477,51 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        if getattr(self, "pending_cookie", None):
-            self.send_header("Set-Cookie", self.pending_cookie)
+        for cookie in getattr(self, "pending_cookies", []):
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
-    def user_id(self) -> str:
+    def add_cookie(self, name: str, value: str, max_age: int) -> None:
+        secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+        cookie = f"{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
+        self.pending_cookies = [*getattr(self, "pending_cookies", []), cookie]
+
+    def cookies(self) -> SimpleCookie:
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get("Cookie", ""))
-            candidate = cookie.get("bidmate_user")
+        except ValueError:
+            pass
+        return cookie
+
+    def authenticated_user(self) -> CompatRow | sqlite3.Row | None:
+        token = self.cookies().get("bidmate_session")
+        if not token:
+            return None
+        token_hash = hashlib.sha256(token.value.encode()).hexdigest()
+        with connection() as db:
+            row = db.execute(
+                """SELECT p.* FROM sessions s JOIN profiles p ON p.user_id=s.user_id
+                WHERE s.token_hash=? AND s.expires_at>?""", (token_hash, now_iso())
+            ).fetchone()
+        return row
+
+    def user_id(self) -> str:
+        authenticated = self.authenticated_user()
+        if authenticated:
+            return authenticated["user_id"]
+        candidate = self.cookies().get("bidmate_user")
+        try:
             user_id = candidate.value if candidate else ""
             uuid.UUID(user_id)
+            with connection() as db:
+                profile = db.execute("SELECT email FROM profiles WHERE user_id=?", (user_id,)).fetchone()
+            if profile and profile["email"]:
+                raise ValueError
         except (ValueError, AttributeError):
             user_id = str(uuid.uuid4())
-            self.pending_cookie = f"bidmate_user={user_id}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
+            self.add_cookie("bidmate_user", user_id, 31_536_000)
         with connection() as db:
             exists = db.execute("SELECT 1 FROM profiles WHERE user_id=?", (user_id,)).fetchone()
             if not exists:
@@ -419,6 +534,14 @@ class Handler(BaseHTTPRequestHandler):
                 )
         return user_id
 
+    def create_session(self, user_id: str) -> None:
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        with connection() as db:
+            db.execute("DELETE FROM sessions WHERE expires_at<=?", (now_iso(),))
+            db.execute("INSERT INTO sessions VALUES (?,?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), user_id, expires, now_iso()))
+        self.add_cookie("bidmate_session", token, 2_592_000)
+
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
         if length > 50_000:
@@ -429,7 +552,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
         if path == "/api/session":
-            self.send_json({"ok": True, "user_id": self.user_id()})
+            authenticated = self.authenticated_user()
+            user_id = authenticated["user_id"] if authenticated else self.user_id()
+            self.send_json({"ok": True, "user_id": user_id, "authenticated": bool(authenticated),
+                            "email": authenticated["email"] if authenticated else None})
             return
         if path == "/api/health":
             with connection() as db:
@@ -517,6 +643,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/auth/register":
+            self.register()
+            return
+        if path == "/api/auth/login":
+            self.login()
+            return
+        if path == "/api/auth/logout":
+            token = self.cookies().get("bidmate_session")
+            if token:
+                with connection() as db:
+                    db.execute("DELETE FROM sessions WHERE token_hash=?", (hashlib.sha256(token.value.encode()).hexdigest(),))
+            self.add_cookie("bidmate_session", "", 0)
+            self.add_cookie("bidmate_user", "", 0)
+            self.send_json({"ok": True})
+            return
         if path == "/api/sync":
             try:
                 count = sync_public_notices()
@@ -543,6 +684,43 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"saved": saved})
             return
         self.send_json({"error": "지원하지 않는 경로입니다."}, HTTPStatus.NOT_FOUND)
+
+    def register(self) -> None:
+        try:
+            body = self.read_json()
+            email = str(body.get("email", "")).strip().lower()
+            password = str(body.get("password", ""))
+            if "@" not in email or len(email) > 254:
+                raise ValueError("올바른 이메일 주소를 입력해 주세요.")
+            if len(password) < 8:
+                raise ValueError("비밀번호는 8자 이상이어야 합니다.")
+            if self.authenticated_user():
+                raise ValueError("이미 로그인되어 있습니다.")
+            user_id = self.user_id()
+            with connection() as db:
+                if db.execute("SELECT 1 FROM profiles WHERE email=?", (email,)).fetchone():
+                    raise ValueError("이미 가입된 이메일입니다.")
+                db.execute("UPDATE profiles SET email=?,password_hash=?,updated_at=? WHERE user_id=?",
+                           (email, password_hash(password), now_iso(), user_id))
+            self.create_session(user_id)
+            self.send_json({"ok": True, "email": email}, HTTPStatus.CREATED)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def login(self) -> None:
+        try:
+            body = self.read_json()
+            email = str(body.get("email", "")).strip().lower()
+            password = str(body.get("password", ""))
+            with connection() as db:
+                profile = db.execute("SELECT * FROM profiles WHERE email=?", (email,)).fetchone()
+            if not profile or not password_matches(password, profile["password_hash"]):
+                raise ValueError("이메일 또는 비밀번호가 올바르지 않습니다.")
+            self.create_session(profile["user_id"])
+            self.add_cookie("bidmate_user", "", 0)
+            self.send_json({"ok": True, "email": email})
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def serve_static(self, path: str) -> None:
         requested = "index.html" if path == "/" else path.lstrip("/")

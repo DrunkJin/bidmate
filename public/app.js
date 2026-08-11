@@ -1,4 +1,4 @@
-const state = { profile: null, notices: [], savedOnly: false, loading: false };
+const state = { profile: null, notices: [], savedOnly: false, loading: false, session: null, authMode: "login" };
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>\"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const money = (value) => value ? new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 }).format(value) + "원" : "금액 미정";
@@ -23,13 +23,15 @@ function renderSkeleton() {
 
 async function loadAll() {
   renderSkeleton();
-  await api("/api/session");
+  state.session = await api("/api/session");
   const [profile, stats, health] = await Promise.all([api("/api/profile"), api("/api/stats"), api("/api/health")]);
   state.profile = profile;
   $("#companyName").textContent = profile.company_name; $("#sidebarCompany").textContent = profile.company_name;
   $("#totalStat").textContent = stats.total; $("#matchStat").textContent = stats.strong_matches; $("#heroMatch").textContent = stats.strong_matches;
   $("#closingStat").textContent = stats.closing_soon; $("#savedStat").textContent = stats.saved; $("#savedBadge").textContent = stats.saved;
   if (health.data_mode === "live-ready") { $("#sourceStatus").textContent = "나라장터 API 연결됨"; $("#sourceDescription").textContent = "동기화 버튼으로 최신 용역 공고를 가져오세요."; $(".live-dot").classList.add("connected"); }
+  $("#accountLabel").textContent = state.session.authenticated ? state.session.email : "체험 모드";
+  $("#accountButton").textContent = state.session.authenticated ? "로그아웃" : "로그인";
   await loadNotices();
 }
 
@@ -65,9 +67,14 @@ function openNotice(id) {
 
 async function toggleSave(id) { try { const result = await api(`/api/notices/${encodeURIComponent(id)}/save`, { method: "POST", body: "{}" }); toast(result.saved ? "관심 공고에 저장했어요." : "관심 공고에서 제외했어요."); await loadAll(); } catch (error) { toast(error.message); } }
 function openProfile() { const p = state.profile, form = $("#profileForm"); form.company_name.value = p.company_name; form.region.value = p.region; form.max_budget.value = p.max_budget; form.categories.value = p.categories.join(", "); form.keywords.value = p.keywords.join(", "); $("#profileError").textContent = ""; $("#profileDialog").showModal(); }
+function setAuthMode(mode) { state.authMode = mode; const register = mode === "register"; $("#authTitle").textContent = register ? "회원가입" : "로그인"; $("#authForm [type=submit]").textContent = register ? "계정 만들기" : "로그인"; $("#authForm [name=password]").autocomplete = register ? "new-password" : "current-password"; $("#authError").textContent = ""; document.querySelectorAll("[data-auth-tab]").forEach((b) => b.classList.toggle("active", b.dataset.authTab === mode)); }
+function openAuth() { setAuthMode("login"); $("#authForm").reset(); $("#authDialog").showModal(); }
 
 $("#profileForm").addEventListener("submit", async (e) => { e.preventDefault(); const form = e.currentTarget, values = (name) => form[name].value.split(",").map((v) => v.trim()).filter(Boolean); const submit = form.querySelector("[type=submit]"); submit.disabled = true; try { await api("/api/profile", { method: "PUT", body: JSON.stringify({ company_name: form.company_name.value.trim(), region: form.region.value, max_budget: Number(form.max_budget.value), categories: values("categories"), keywords: values("keywords") }) }); $("#profileDialog").close(); toast("회사 조건을 반영해 추천을 갱신했어요."); await loadAll(); } catch (error) { $("#profileError").textContent = error.message; } finally { submit.disabled = false; } });
 $("#editProfile").onclick = openProfile; $("#profileNav").onclick = openProfile; $("#mobileMenu").onclick = () => $("#sidebar").classList.toggle("open");
+$("#accountButton").onclick = async () => { if (!state.session?.authenticated) return openAuth(); if (!confirm("로그아웃할까요?")) return; await api("/api/auth/logout", {method:"POST", body:"{}"}); toast("로그아웃했습니다."); await loadAll(); };
+document.querySelectorAll("[data-auth-tab]").forEach((button) => button.onclick = () => setAuthMode(button.dataset.authTab));
+$("#authForm").addEventListener("submit", async (e) => { e.preventDefault(); const form = e.currentTarget, submit = form.querySelector("[type=submit]"); submit.disabled = true; $("#authError").textContent = ""; try { const endpoint = state.authMode === "register" ? "register" : "login"; await api(`/api/auth/${endpoint}`, {method:"POST", body:JSON.stringify({email:form.email.value.trim(), password:form.password.value})}); $("#authDialog").close(); toast(state.authMode === "register" ? "회원가입이 완료됐어요." : "로그인했습니다."); await loadAll(); } catch(error) { $("#authError").textContent = error.message; } finally { submit.disabled = false; } });
 document.querySelectorAll("[data-close]").forEach((btn) => btn.addEventListener("click", () => $("#" + btn.dataset.close).close()));
 document.querySelectorAll(".nav-item[data-view]").forEach((btn) => btn.addEventListener("click", () => { document.querySelectorAll(".nav-item").forEach((v) => v.classList.remove("active")); btn.classList.add("active"); state.savedOnly = btn.dataset.view === "saved"; $("#listTitle").textContent = state.savedOnly ? "저장한 관심 공고" : "놓치면 아까운 공고"; $("#currentView").textContent = state.savedOnly ? "/ 관심 공고" : "/ 맞춤 공고"; $("#sidebar").classList.remove("open"); loadNotices(); }));
 let searchTimer; $("#searchInput").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadNotices, 250); }); $("#categoryFilter").addEventListener("change", loadNotices); $("#sortFilter").addEventListener("change", loadNotices);

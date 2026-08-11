@@ -22,7 +22,7 @@
       <span class="live-dot"></span><strong id="sourceStatus">데모 데이터 사용 중</strong>
       <p id="sourceDescription">공공데이터 API 키를 연결하면 실제 공고를 불러올 수 있어요.</p>
     </div>
-    <div class="sidebar-user"><div class="avatar">BM</div><div><strong id="sidebarCompany">회사명</strong><span>맞춤 입찰 워크스페이스</span></div></div>
+    <div class="sidebar-user"><div class="avatar">BM</div><div><strong id="sidebarCompany">회사명</strong><span id="accountLabel">체험 모드</span></div><button class="account-button" id="accountButton">로그인</button></div>
   </aside>
 
   <main>
@@ -70,6 +70,21 @@
       <p class="form-error" id="profileError"></p>
       <button class="primary-button" type="submit">저장하고 다시 추천받기</button>
     </form>
+  </dialog>
+  <dialog id="authDialog">
+    <div class="modal auth-modal">
+      <button class="modal-close" type="button" data-close="authDialog" aria-label="닫기">×</button>
+      <p class="eyebrow">YOUR BIDMATE</p><h2 id="authTitle">로그인</h2>
+      <p class="form-intro" id="authIntro">어디서든 회사 조건과 관심 공고를 이어서 관리하세요.</p>
+      <div class="auth-tabs"><button class="active" data-auth-tab="login">로그인</button><button data-auth-tab="register">회원가입</button></div>
+      <form class="profile-form" id="authForm">
+        <label>이메일<input name="email" type="email" autocomplete="email" required></label>
+        <label>비밀번호 <small>8자 이상</small><input name="password" type="password" minlength="8" autocomplete="current-password" required></label>
+        <p class="form-error" id="authError"></p>
+        <button class="primary-button" type="submit">로그인</button>
+      </form>
+      <p class="privacy-note">회원가입하면 현재 체험 중인 회사 조건과 관심 공고가 계정에 저장됩니다.</p>
+    </div>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="/app.js" defer></script>

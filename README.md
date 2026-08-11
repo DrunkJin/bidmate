@@ -17,7 +17,8 @@ python app.py
 - 회사 조건 기반 공고 추천 점수와 추천 이유
 - 공고명·기관·키워드 검색, 분야 필터, 추천·마감·금액순 정렬
 - 관심 공고 저장 및 별도 모아보기
-- 브라우저별 익명 사용자 분리(회사 조건과 관심 공고 비공개)
+- 이메일 회원가입·로그인과 안전한 세션 쿠키
+- 사용자별 회사 조건과 관심 공고 분리
 - 마감 임박 표시와 준비 서류 체크리스트
 - 반응형 대시보드와 로딩·오류 상태
 - SQLite 영구 저장
@@ -29,6 +30,11 @@ python app.py
 
 ## 공개 배포
 
-이 저장소에는 Render Blueprint 설정이 포함되어 있습니다. Render에서 저장소를 연결하고 `DATA_GO_KR_SERVICE_KEY` 환경 변수만 등록하면 공개 웹 서비스로 실행할 수 있습니다.
+이 저장소에는 Render Blueprint 설정이 포함되어 있습니다. Render에서 저장소를 연결하고 다음 환경 변수를 등록하면 공개 웹 서비스로 실행할 수 있습니다.
+
+- `DATA_GO_KR_SERVICE_KEY`: 공공데이터포털 인증키
+- `DATABASE_URL`: 같은 Render 리전에서 만든 PostgreSQL의 Internal Database URL
+
+`DATABASE_URL`이 없으면 로컬 개발용 SQLite를 사용하고, 값이 있으면 PostgreSQL을 사용합니다. 비밀번호는 scrypt로 해시되며 로그인 세션 토큰도 원문이 아닌 SHA-256 해시로 저장됩니다.
 
 무료 인스턴스의 SQLite 파일은 재배포 시 초기화될 수 있으므로, 운영 서비스에서는 영구 디스크 또는 PostgreSQL 사용을 권장합니다.
