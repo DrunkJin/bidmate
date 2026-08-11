@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1628">
+  <title>Bidmate — 우리 회사에 맞는 입찰 찾기</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <a class="logo" href="#"><span>B</span><strong>bidmate</strong></a>
+    <nav aria-label="주 메뉴">
+      <button class="nav-item active" data-view="all"><i>⌁</i> 맞춤 공고</button>
+      <button class="nav-item" data-view="saved"><i>♡</i> 관심 공고 <b id="savedBadge">0</b></button>
+      <button class="nav-item" id="profileNav"><i>◎</i> 회사 조건</button>
+    </nav>
+    <div class="source-card">
+      <span class="live-dot"></span><strong id="sourceStatus">데모 데이터 사용 중</strong>
+      <p id="sourceDescription">공공데이터 API 키를 연결하면 실제 공고를 불러올 수 있어요.</p>
+    </div>
+    <div class="sidebar-user"><div class="avatar">BM</div><div><strong id="sidebarCompany">회사명</strong><span>맞춤 입찰 워크스페이스</span></div></div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <button class="mobile-menu" id="mobileMenu" aria-label="메뉴 열기">☰</button>
+      <div><span class="crumb">워크스페이스</span><strong id="currentView">/ 맞춤 공고</strong></div>
+      <div class="top-actions"><button class="outline-button sync-button" id="syncButton">↻ 실시간 공고 동기화</button><button class="outline-button" id="editProfile">회사 조건 수정</button></div>
+    </header>
+
+    <section class="dashboard">
+      <div class="welcome">
+        <div><p class="eyebrow">TODAY'S OPPORTUNITIES</p><h1><span id="companyName">우리 회사</span>가<br>잡을 수 있는 기회예요.</h1><p>복잡한 나라장터 공고에서 우리 조건에 맞는 사업만 골랐습니다.</p></div>
+        <div class="match-orbit"><div><strong id="heroMatch">0</strong><span>강력 추천</span></div></div>
+      </div>
+
+      <div class="stats">
+        <article><span>수집된 전체 공고</span><strong id="totalStat">—</strong><small>용역 공고 기준</small></article>
+        <article class="accent"><span>조건 일치 70% 이상</span><strong id="matchStat">—</strong><small>지금 확인해 보세요</small></article>
+        <article><span>마감 임박</span><strong id="closingStat">—</strong><small>3일 이내 마감</small></article>
+        <article><span>관심 공고</span><strong id="savedStat">—</strong><small>나중에 다시 보기</small></article>
+      </div>
+
+      <div class="content-heading">
+        <div><p class="eyebrow">MATCHED FOR YOU</p><h2 id="listTitle">놓치면 아까운 공고</h2><p class="result-summary" id="resultSummary"></p></div>
+        <div class="filters">
+          <label class="search"><span>⌕</span><input id="searchInput" aria-label="공고 검색" placeholder="공고명, 기관, 키워드 검색"></label>
+          <select id="categoryFilter" aria-label="분야 선택"><option value="">모든 분야</option></select>
+          <select id="sortFilter" aria-label="정렬"><option value="match">추천순</option><option value="deadline">마감 임박순</option><option value="budget">사업 금액순</option></select>
+        </div>
+      </div>
+      <div class="notice-list" id="noticeList" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <dialog id="noticeDialog"><div class="modal" id="noticeDetail"></div></dialog>
+  <dialog id="profileDialog">
+    <form class="modal profile-form" id="profileForm">
+      <button class="modal-close" type="button" data-close="profileDialog" aria-label="닫기">×</button>
+      <p class="eyebrow">COMPANY PROFILE</p><h2>우리 회사 조건</h2>
+      <p class="form-intro">정보가 구체적일수록 추천 점수가 정확해집니다.</p>
+      <label>회사명<input name="company_name" maxlength="60" required></label>
+      <div class="form-row"><label>사업 지역<select name="region"><option>전국</option><option>서울</option><option>경기</option><option>인천</option><option>부산</option><option>대전</option><option>대구</option><option>광주</option></select></label><label>수행 가능 최대 금액<input name="max_budget" type="number" min="1000000" step="1000000" required></label></div>
+      <label>주력 업종 <small>쉼표로 구분</small><input name="categories" placeholder="영상제작, 디자인" required></label>
+      <label>관심 키워드 <small>쉼표로 구분</small><input name="keywords" placeholder="영상, 콘텐츠, 홍보" required></label>
+      <p class="form-error" id="profileError"></p>
+      <button class="primary-button" type="submit">저장하고 다시 추천받기</button>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

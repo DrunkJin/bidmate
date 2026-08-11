@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: bidmate
+    runtime: python
+    plan: free
+    buildCommand: ""
+    startCommand: python app.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATA_GO_KR_SERVICE_KEY
+        sync: false
