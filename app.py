@@ -173,7 +173,6 @@ def sync_public_notices() -> int:
         raise RuntimeError("최근 7일간 진행 중인 용역 공고를 찾지 못했습니다.")
     with connection() as db:
         db.execute("DELETE FROM notices")
-        db.execute("DELETE FROM saved_notices")
         for notice in normalized:
             db.execute(
                 """INSERT INTO notices
@@ -183,6 +182,7 @@ def sync_public_notices() -> int:
                  notice["budget"], notice["deadline"], json.dumps(notice["keywords"], ensure_ascii=False),
                  json.dumps(notice["documents"], ensure_ascii=False), notice["source_url"], now_iso()),
             )
+        db.execute("DELETE FROM saved_notices WHERE notice_id NOT IN (SELECT id FROM notices)")
     return len(normalized)
 
 
