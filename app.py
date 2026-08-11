@@ -10,6 +10,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -391,8 +392,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if getattr(self, "pending_cookie", None):
+            self.send_header("Set-Cookie", self.pending_cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def user_id(self) -> str:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+            candidate = cookie.get("bidmate_user")
+            user_id = candidate.value if candidate else ""
+            uuid.UUID(user_id)
+        except (ValueError, AttributeError):
+            user_id = str(uuid.uuid4())
+            self.pending_cookie = f"bidmate_user={user_id}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
+        with connection() as db:
+            exists = db.execute("SELECT 1 FROM profiles WHERE user_id=?", (user_id,)).fetchone()
+            if not exists:
+                demo = db.execute("SELECT * FROM profiles WHERE user_id='demo'").fetchone()
+                db.execute(
+                    """INSERT INTO profiles(user_id,company_name,region,categories,keywords,max_budget,capabilities,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (user_id, "새 회사", demo["region"], demo["categories"], demo["keywords"],
+                     demo["max_budget"], demo["capabilities"], now_iso()),
+                )
+        return user_id
 
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
@@ -403,6 +428,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path, query = parsed.path, parse_qs(parsed.query)
+        if path == "/api/session":
+            self.send_json({"ok": True, "user_id": self.user_id()})
+            return
         if path == "/api/health":
             with connection() as db:
                 fetched = db.execute("SELECT MAX(fetched_at) FROM notices").fetchone()[0]
@@ -414,19 +442,21 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         if path == "/api/profile":
+            user_id = self.user_id()
             with connection() as db:
-                row = db.execute("SELECT * FROM profiles WHERE user_id='demo'").fetchone()
+                row = db.execute("SELECT * FROM profiles WHERE user_id=?", (user_id,)).fetchone()
                 self.send_json(profile_dict(row))
             return
         if path == "/api/notices":
             self.list_notices(query)
             return
         if path == "/api/stats":
+            user_id = self.user_id()
             with connection() as db:
-                profile = profile_dict(db.execute("SELECT * FROM profiles WHERE user_id='demo'").fetchone())
+                profile = profile_dict(db.execute("SELECT * FROM profiles WHERE user_id=?", (user_id,)).fetchone())
                 rows = db.execute("SELECT * FROM notices").fetchall()
                 scores = [score_notice(row, profile)[0] for row in rows]
-                saved = db.execute("SELECT COUNT(*) FROM saved_notices WHERE user_id='demo'").fetchone()[0]
+                saved = db.execute("SELECT COUNT(*) FROM saved_notices WHERE user_id=?", (user_id,)).fetchone()[0]
                 self.send_json({
                     "total": len(rows), "strong_matches": sum(score >= 70 for score in scores),
                     "closing_soon": sum((date.fromisoformat(row["deadline"]) - date.today()).days <= 3 for row in rows),
@@ -439,9 +469,10 @@ class Handler(BaseHTTPRequestHandler):
         keyword = query.get("q", [""])[0].strip().lower()
         category = query.get("category", [""])[0]
         saved_only = query.get("saved", ["false"])[0] == "true"
+        user_id = self.user_id()
         with connection() as db:
-            profile = profile_dict(db.execute("SELECT * FROM profiles WHERE user_id='demo'").fetchone())
-            saved_ids = {row[0] for row in db.execute("SELECT notice_id FROM saved_notices WHERE user_id='demo'")}
+            profile = profile_dict(db.execute("SELECT * FROM profiles WHERE user_id=?", (user_id,)).fetchone())
+            saved_ids = {row[0] for row in db.execute("SELECT notice_id FROM saved_notices WHERE user_id=?", (user_id,))}
             rows = db.execute("SELECT * FROM notices").fetchall()
             notices = [serialize_notice(row, profile, row["id"] in saved_ids) for row in rows]
         if keyword:
@@ -464,6 +495,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "지원하지 않는 경로입니다."}, HTTPStatus.NOT_FOUND)
             return
         try:
+            user_id = self.user_id()
             body = self.read_json()
             company_name = str(body.get("company_name", "")).strip()
             region = str(body.get("region", "")).strip()
@@ -475,9 +507,9 @@ class Handler(BaseHTTPRequestHandler):
             with connection() as db:
                 db.execute(
                     """UPDATE profiles SET company_name=?,region=?,categories=?,keywords=?,max_budget=?,updated_at=?
-                    WHERE user_id='demo'""",
+                    WHERE user_id=?""",
                     (company_name, region, json.dumps(categories, ensure_ascii=False),
-                     json.dumps(keywords, ensure_ascii=False), max_budget, now_iso()),
+                     json.dumps(keywords, ensure_ascii=False), max_budget, now_iso(), user_id),
                 )
             self.send_json({"ok": True})
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -494,18 +526,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/notices/") and path.endswith("/save"):
             notice_id = path.split("/")[3]
+            user_id = self.user_id()
             with connection() as db:
                 exists = db.execute(
-                    "SELECT 1 FROM saved_notices WHERE user_id='demo' AND notice_id=?", (notice_id,)
+                    "SELECT 1 FROM saved_notices WHERE user_id=? AND notice_id=?", (user_id, notice_id)
                 ).fetchone()
                 if exists:
-                    db.execute("DELETE FROM saved_notices WHERE user_id='demo' AND notice_id=?", (notice_id,))
+                    db.execute("DELETE FROM saved_notices WHERE user_id=? AND notice_id=?", (user_id, notice_id))
                     saved = False
                 else:
                     if not db.execute("SELECT 1 FROM notices WHERE id=?", (notice_id,)).fetchone():
                         self.send_json({"error": "공고를 찾을 수 없습니다."}, HTTPStatus.NOT_FOUND)
                         return
-                    db.execute("INSERT INTO saved_notices VALUES ('demo', ?, ?)", (notice_id, now_iso()))
+                    db.execute("INSERT INTO saved_notices VALUES (?, ?, ?)", (user_id, notice_id, now_iso()))
                     saved = True
             self.send_json({"saved": saved})
             return

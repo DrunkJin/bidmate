@@ -23,6 +23,7 @@ function renderSkeleton() {
 
 async function loadAll() {
   renderSkeleton();
+  await api("/api/session");
   const [profile, stats, health] = await Promise.all([api("/api/profile"), api("/api/stats"), api("/api/health")]);
   state.profile = profile;
   $("#companyName").textContent = profile.company_name; $("#sidebarCompany").textContent = profile.company_name;
